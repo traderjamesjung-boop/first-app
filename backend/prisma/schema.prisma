@@ -1,0 +1,336 @@
+// Prisma 스키마 파일
+// 형법 마스터 데이터베이스 스키마
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// 사용자 모델
+model User {
+  id                String              @id @default(uuid())
+  email             String              @unique
+  password          String
+  name              String
+  phone             String?
+  role              UserRole            @default(STUDENT)
+  profileImage      String?
+  isActive          Boolean             @default(true)
+  emailVerified     Boolean             @default(false)
+  fcmToken          String?             @map("fcm_token") // 푸시 알림용
+  createdAt         DateTime            @default(now()) @map("created_at")
+  updatedAt         DateTime            @updatedAt @map("updated_at")
+  
+  // Relations
+  studySettings     StudySetting?
+  studyRecords      StudyRecord[]
+  questionAttempts  QuestionAttempt[]
+  courseEnrollments CourseEnrollment[]
+  ebookPurchases    EbookPurchase[]
+  payments          Payment[]
+  bookmarks         Bookmark[]
+  
+  @@map("users")
+}
+
+enum UserRole {
+  STUDENT
+  TEACHER
+  ADMIN
+}
+
+// 학습 설정
+model StudySetting {
+  id                  String   @id @default(uuid())
+  userId              String   @unique @map("user_id")
+  dailyQuestionCount  Int      @default(10) @map("daily_question_count") // 5, 10, 20, 30
+  notificationTime    String   @default("09:00") @map("notification_time") // HH:mm 형식
+  notificationEnabled Boolean  @default(true) @map("notification_enabled")
+  difficulty          Difficulty @default(MEDIUM)
+  categories          String[] // 학습할 카테고리 ID 배열
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("study_settings")
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+  EXPERT
+}
+
+// 문제 카테고리
+model Category {
+  id          String     @id @default(uuid())
+  name        String     @unique // 예: "총론", "각론", "형사소송법"
+  description String?
+  order       Int        @default(0)
+  parentId    String?    @map("parent_id") // 하위 카테고리를 위한 계층 구조
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+  
+  parent      Category?  @relation("CategoryToCategory", fields: [parentId], references: [id])
+  children    Category[] @relation("CategoryToCategory")
+  questions   Question[]
+  
+  @@map("categories")
+}
+
+// 문제 모델
+model Question {
+  id                String             @id @default(uuid())
+  categoryId        String             @map("category_id")
+  examType          ExamType           @map("exam_type") // 공무원, 변호사시험
+  examYear          Int                @map("exam_year")
+  questionNumber    Int                @map("question_number")
+  content           String             @db.Text
+  choices           Json               // 선택지 배열 [{ id: 1, text: "..." }, ...]
+  correctAnswer     Int                @map("correct_answer") // 정답 번호
+  explanation       String             @db.Text // 상세 해설
+  caseLaw           String?            @map("case_law") // 관련 판례
+  keywords          String[]           // 키워드 배열
+  difficulty        Difficulty         @default(MEDIUM)
+  isPublic          Boolean            @default(true) @map("is_public")
+  viewCount         Int                @default(0) @map("view_count")
+  correctRate       Float?             @map("correct_rate") // 정답률 (%)
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+  
+  category          Category           @relation(fields: [categoryId], references: [id])
+  attempts          QuestionAttempt[]
+  bookmarks         Bookmark[]
+  
+  @@unique([examType, examYear, questionNumber])
+  @@index([categoryId])
+  @@index([difficulty])
+  @@map("questions")
+}
+
+enum ExamType {
+  CIVIL_SERVICE      // 공무원 시험
+  BAR_EXAM           // 변호사시험
+  JUDICIAL_EXAM      // 구 사법시험
+  PRACTICE           // 연습 문제
+}
+
+// 학습 기록
+model StudyRecord {
+  id                String   @id @default(uuid())
+  userId            String   @map("user_id")
+  date              DateTime @default(now()) @db.Date
+  questionCount     Int      @map("question_count") // 푼 문제 수
+  correctCount      Int      @map("correct_count")  // 정답 수
+  totalTime         Int      @map("total_time")      // 총 학습 시간 (초)
+  completedDaily    Boolean  @default(false) @map("completed_daily") // 일일 목표 달성 여부
+  createdAt         DateTime @default(now()) @map("created_at")
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, date])
+  @@index([userId])
+  @@map("study_records")
+}
+
+// 문제 풀이 기록
+model QuestionAttempt {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")
+  questionId      String   @map("question_id")
+  selectedAnswer  Int      @map("selected_answer")
+  isCorrect       Boolean  @map("is_correct")
+  timeSpent       Int      @map("time_spent") // 소요 시간 (초)
+  attemptCount    Int      @default(1) @map("attempt_count") // 시도 횟수
+  createdAt       DateTime @default(now()) @map("created_at")
+  
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([questionId])
+  @@index([userId, questionId])
+  @@map("question_attempts")
+}
+
+// 북마크 (오답노트)
+model Bookmark {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  questionId String   @map("question_id")
+  note       String?  @db.Text // 사용자 메모
+  createdAt  DateTime @default(now()) @map("created_at")
+  
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, questionId])
+  @@index([userId])
+  @@map("bookmarks")
+}
+
+// 강의 모델
+model Course {
+  id           String             @id @default(uuid())
+  title        String
+  description  String             @db.Text
+  instructor   String
+  thumbnailUrl String?            @map("thumbnail_url")
+  price        Int                @default(0) // 0이면 무료
+  duration     Int                // 총 강의 시간 (분)
+  level        Difficulty         @default(MEDIUM)
+  isPublished  Boolean            @default(false) @map("is_published")
+  viewCount    Int                @default(0) @map("view_count")
+  rating       Float?             @default(0)
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+  
+  lessons      Lesson[]
+  enrollments  CourseEnrollment[]
+  
+  @@index([isPublished])
+  @@map("courses")
+}
+
+// 강의 레슨
+model Lesson {
+  id          String   @id @default(uuid())
+  courseId    String   @map("course_id")
+  title       String
+  description String?  @db.Text
+  videoUrl    String   @map("video_url")
+  duration    Int      // 레슨 시간 (분)
+  order       Int      @default(0)
+  isFree      Boolean  @default(false) @map("is_free") // 무료 체험 레슨
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  course    Course            @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  progress  LessonProgress[]
+  
+  @@index([courseId])
+  @@map("lessons")
+}
+
+// 강의 수강 등록
+model CourseEnrollment {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")
+  courseId        String   @map("course_id")
+  progress        Int      @default(0) // 진도율 (%)
+  lastAccessedAt  DateTime? @map("last_accessed_at")
+  completedAt     DateTime? @map("completed_at")
+  enrolledAt      DateTime @default(now()) @map("enrolled_at")
+  
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  course   Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lessonProgress LessonProgress[]
+  
+  @@unique([userId, courseId])
+  @@index([userId])
+  @@map("course_enrollments")
+}
+
+// 레슨 진도
+model LessonProgress {
+  id           String            @id @default(uuid())
+  enrollmentId String            @map("enrollment_id")
+  lessonId     String            @map("lesson_id")
+  completed    Boolean           @default(false)
+  watchedTime  Int               @default(0) @map("watched_time") // 시청 시간 (초)
+  lastPosition Int               @default(0) @map("last_position") // 마지막 재생 위치 (초)
+  completedAt  DateTime?         @map("completed_at")
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+  
+  enrollment CourseEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  lesson     Lesson           @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  
+  @@unique([enrollmentId, lessonId])
+  @@index([enrollmentId])
+  @@map("lesson_progress")
+}
+
+// 전자책 모델
+model Ebook {
+  id           String          @id @default(uuid())
+  title        String
+  author       String
+  description  String          @db.Text
+  coverUrl     String?         @map("cover_url")
+  fileUrl      String          @map("file_url") // PDF 파일 URL
+  price        Int
+  pages        Int
+  isbn         String?         @unique
+  publisher    String?
+  publishedAt  DateTime?       @map("published_at")
+  isPublished  Boolean         @default(false) @map("is_published")
+  viewCount    Int             @default(0) @map("view_count")
+  downloadCount Int            @default(0) @map("download_count")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+  
+  purchases    EbookPurchase[]
+  
+  @@index([isPublished])
+  @@map("ebooks")
+}
+
+// 전자책 구매 기록
+model EbookPurchase {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  ebookId      String   @map("ebook_id")
+  purchaseDate DateTime @default(now()) @map("purchase_date")
+  price        Int
+  
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ebook Ebook @relation(fields: [ebookId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, ebookId])
+  @@index([userId])
+  @@map("ebook_purchases")
+}
+
+// 결제 기록
+model Payment {
+  id              String        @id @default(uuid())
+  userId          String        @map("user_id")
+  paymentType     PaymentType   @map("payment_type")
+  itemId          String        @map("item_id") // 강의 또는 전자책 ID
+  amount          Int
+  status          PaymentStatus @default(PENDING)
+  paymentKey      String?       @unique @map("payment_key") // 토스페이먼츠 결제 키
+  orderId         String        @unique @map("order_id")
+  method          String?       // 결제 수단 (카드, 계좌이체 등)
+  approvedAt      DateTime?     @map("approved_at")
+  canceledAt      DateTime?     @map("canceled_at")
+  cancelReason    String?       @map("cancel_reason")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([status])
+  @@map("payments")
+}
+
+enum PaymentType {
+  COURSE
+  EBOOK
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  CANCELED
+  REFUNDED
+}
